@@ -1,0 +1,215 @@
+# PHASE 0 基础工具
+
+本目录提供六个仅使用 Python 标准库的命令行工具。目标环境为 Python 3.11.9、Windows 和 UTF-8。输入文件可使用 UTF-8 或带 BOM 的 UTF-8；JSON 输出保留 Unicode 字符。
+
+所有查找和比对结果都只是供人工复核的机器辅助信息，不构成文学质量、语义正确性或抄袭结论。
+
+## 通用命令与退出码
+
+从项目根目录运行，例如：
+
+```bat
+python -I 10_TOOLS\word_count.py chapter.txt --json
+```
+
+- `0`：工具执行成功。存在重复、连续性或指纹警告时仍返回 `0`。
+- `1`：`validate_project.py` 发现项目结构或 frontmatter 不符合要求。
+- `2`：命令行参数、文件读取、UTF-8 解码、JSON 格式或输入模式错误。
+
+所有工具支持 `--help`。带 `--json` 的工具将结构化结果写到标准输出。
+
+## `word_count.py`
+
+统计 Han 字符、非空白字符和段落数。
+
+```bat
+python -I 10_TOOLS\word_count.py chapter.txt
+python -I 10_TOOLS\word_count.py chapter.txt --json
+```
+
+JSON 输出字段：
+
+```json
+{
+  "han_characters": 100,
+  "non_whitespace_characters": 120,
+  "paragraphs": 5
+}
+```
+
+- Han 字符按明确列出的 CJK 统一表意文字码位范围计数，不含标点、拉丁字母和数字。
+- 非空白字符使用 Python 的 Unicode 空白判定。
+- 段落是由含空格或制表符的空行分隔的非空文本块；空文件和纯空白文件的三项计数均为 `0`。
+
+## `duplicate_check.py`
+
+报告精确重复段落、高相似段落和重复句首。
+
+```bat
+python -I 10_TOOLS\duplicate_check.py chapter.txt --threshold 0.85 --opening-length 6 --json
+```
+
+主要输出字段为 `exact_duplicates`、`similar_paragraphs`、`repeated_openings`、`threshold`、`opening_length` 和 `disclaimer`。段落编号从 `1` 开始。
+
+判定规则：
+
+1. 段落内部空白归一化后完全相同，归入精确重复；输出原文本及所有出现位置。
+2. 非完全相同的段落两两使用 `difflib.SequenceMatcher` 计算相似度；达到显式阈值即报告。阈值范围为 `(0, 1]`，默认 `0.85`。
+3. 句子按 `。！？!?；;` 分隔，去除空白后截取前 N 个字符作为“句首”；同一前缀出现至少两次即报告。默认 N 为 `6`，可配置。
+
+局限：相似度是字符序列近似，不理解改写含义；重复句首只是保守近似，不代表完整句式重复。两两段落比较为 O(n²)，不适合无上限的大批量文本。所有发现都是警告，绝不是抄袭判定。
+
+## `continuity_check.py`
+
+根据显式 JSON 台账检查人物、地点、物品、能力、事件时间和状态引用。
+
+```bat
+python -I 10_TOOLS\continuity_check.py ledger.json --json
+```
+
+输入模式：
+
+```json
+{
+  "characters": {
+    "character_a": {"aliases": ["alias_a"]}
+  },
+  "locations": {"location_a": {}},
+  "items": {"item_a": {}},
+  "abilities": {"ability_a": {}},
+  "events": {"event_early": 1, "event_late": 2},
+  "state_values": ["present", "absent"],
+  "chapters": [
+    {
+      "id": "001",
+      "references": {
+        "characters": ["alias_a"],
+        "locations": ["location_a"],
+        "items": ["item_a"],
+        "abilities": ["ability_a"],
+        "events": ["event_early"]
+      },
+      "states": {
+        "character_a": {
+          "location": "location_a",
+          "items": ["item_a"],
+          "abilities": ["ability_a"],
+          "state": "present"
+        }
+      }
+    }
+  ]
+}
+```
+
+- 五个人物/地点/物品/能力/事件注册表均以规范名称为键。人物注册表值可包含字符串数组 `aliases`；其他注册表值保留为对象。
+- `events` 的值为整数顺序。章节按 `chapters` 数组顺序处理；若本章事件顺序小于此前章节的最大事件顺序，产生 `timeline_order` 警告。倒叙可能造成合理警告。
+- 每章 `references` 必须显式包含五个类别，类别可以为空数组。未知名称产生 `unknown_reference`。
+- `states` 以人物规范名或别名为键；其中地点、物品、能力和 `state` 值必须能在相应注册表中找到，否则产生 `unknown_state`。
+- 缺失的顶层类别、章节引用类别或状态数据记录在 `missing_data`，不会被静默当作完整数据。
+- 输出 `issues`、`missing_data`、`checked_chapters` 和 `disclaimer`。
+
+局限：工具只比对显式台账，不读取小说正文推断事实，不验证状态变化是否合理，也不证明语义连续性正确。
+
+## `plot_fingerprint.py`
+
+在最近的若干章中查找完全相同的事件、冲突、满足、结尾和人物行动指纹。
+
+```bat
+python -I 10_TOOLS\plot_fingerprint.py fingerprints.json --window 5 --json
+```
+
+输入模式：
+
+```json
+{
+  "chapters": [
+    {
+      "id": "001",
+      "event": "event_value",
+      "conflict": "conflict_value",
+      "satisfaction": "satisfaction_value",
+      "ending": "ending_value",
+      "character_actions": ["character_a:action_value"]
+    }
+  ]
+}
+```
+
+- `window` 必须是正整数，表示与当前章之前多少章比较；默认 `5`，不会比较窗口之外的章节。
+- 四个标量字段及 `character_actions` 中的字符串先归一化空白，再作精确比较。
+- 每次重复输出 `field`、`value`、`current_chapter` 和 `previous_chapter`。
+- 缺失或空指纹记录在 `missing_data`。章节 `id` 必须唯一；缺失 id 会记录并优先使用 `index-N` 临时标识，若与显式 id 冲突则添加 `-generated` 后缀。
+- 输出还包括 `window`、`checked_chapters`、`warnings` 和 `disclaimer`。
+
+局限：只检测相同标签，不能识别语义相近但文字不同的重复。重复是人工复核警告，不是错误。
+
+## `report_generator.py`
+
+汇总研究进度、创作进度、审阅结果、连续性问题、训练成绩和项目风险。
+
+```bat
+python -I 10_TOOLS\report_generator.py report_input.json --json
+python -I 10_TOOLS\report_generator.py report_input.json --output summary.txt
+```
+
+输入模式：
+
+```json
+{
+  "research_progress": {"completed": 2, "total": 4},
+  "creative_progress": {"completed": 1, "total": 5},
+  "review_results": [{"status": "passed"}],
+  "continuity_issues": [{"message": "reference warning"}],
+  "training_scores": [{"score": 80, "max_score": 100}],
+  "project_risks": [{"severity": "high"}]
+}
+```
+
+- 进度对象要求有限数值且满足 `0 <= completed <= total`；`total` 为 `0` 时 `percent` 为 `null`。
+- 审阅按 `status` 计数，风险按 `severity` 计数，连续性问题报告总数。
+- 训练成绩要求 `0 <= score <= max_score` 且 `max_score > 0`；输出平均原始分和平均百分比。
+- 每类结果均包含 `status`、`data` 和 `summary`。缺失类别为 `missing`，显式空对象或空数组为 `empty`，有内容为 `present`。
+- 六类均为 `present` 时 `overall_status` 为 `complete`，否则为 `incomplete`。
+
+该工具只聚合输入，不推断缺失数据，不评价创作质量。
+
+## `validate_project.py`
+
+检查当前工程实际要求的路径：
+
+- `红楼梦.md`
+- `三国演义.md`
+- `水浒传.md`
+- `西游记.md`
+- `觉醒小说 AI 创作工程总纲.md`
+- `10_TOOLS/`
+- `.claude/agents/`
+- `.claude/skills/`
+- `.claude/commands/`
+
+```bat
+python -I 10_TOOLS\validate_project.py
+python -I 10_TOOLS\validate_project.py --project-root "." --json
+```
+
+agents 和 commands 至少各有一个 `.md` 文件；skills 至少有一个递归发现的 `SKILL.md`。这些定义文件必须具有基础 frontmatter。agents 和 skills 要求非空 `name` 与 `description`；commands 只要求非空 `description`，`name` 可选：
+
+```text
+---
+name: example
+description: Example definition
+---
+```
+
+解析器只接受 `---` 包围的扁平 `key: value` 行，支持空行、注释和成对引号，不是完整 YAML 解析器。复杂 YAML 会被拒绝而不会静默误读。验证失败返回 `1`，JSON 中列出全部 `errors`。
+
+## 测试
+
+从项目根目录运行：
+
+```bat
+python -I -m unittest discover -s 10_TOOLS/tests -v
+```
+
+测试覆盖各脚本的独立函数、空输入、无效参数、JSON/文件错误、UTF-8 Windows CLI 输出和退出码。测试数据均使用临时目录，不依赖项目正文，也不修改项目文件。
